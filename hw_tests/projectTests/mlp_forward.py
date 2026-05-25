@@ -11,3 +11,5 @@ def mlp_loss(x : In[float], y_target : In[float], w1 : In[Array[float]], b1 : In
     loss : float = diff * diff
 
     return loss
+
+d_mlp_loss = rev_diff(mlp_loss)
