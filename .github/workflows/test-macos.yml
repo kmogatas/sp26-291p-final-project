@@ -1,0 +1,27 @@
+name: MacOS test
+
+on: [push]
+
+jobs:
+  test-macos:
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - name: Set up Python 3.10.14
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.10'
+    - name: Install dependencies
+      run: |
+        brew install ispc
+        python -m ensurepip --upgrade
+        pip install -r requirements.txt
+        cd slangpy
+        pip install .
+    - name: Running tests
+      run: |
+        cd tests
+        python test.py

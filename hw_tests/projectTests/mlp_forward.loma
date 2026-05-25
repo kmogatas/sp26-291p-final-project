@@ -1,0 +1,25 @@
+def softplus(x : In[float]) -> float {
+    return log(1.0 + exp(x));
+}
+
+def mlp_loss(
+    x : In[float],
+    y_target : In[float],
+    w1 : In[Array[float, 2]],
+    b1 : In[Array[float, 2]],
+    w2 : In[Array[float, 2]],
+    b2 : In[float]
+) -> float {
+    z0 : float = w1[0] * x + b1[0];
+    z1 : float = w1[1] * x + b1[1];
+
+    h0 : float = softplus(z0);
+    h1 : float = softplus(z1);
+
+    y_pred : float = w2[0] * h0 + w2[1] * h1 + b2;
+
+    diff : float = y_pred - y_target;
+    loss : float = diff * diff;
+
+    return loss;
+}
