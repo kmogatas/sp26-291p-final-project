@@ -1,6 +1,7 @@
 import os
 import sys
 import ctypes
+import time
 import numpy as np
 
 PROJECT_ROOT = os.path.abspath(
@@ -11,21 +12,21 @@ sys.path.insert(0, PROJECT_ROOT)
 import compiler
 
 
-def main():
-    loma_file = os.path.join(os.path.dirname(__file__), "mlp_forward.py")
-
+def compile_loma(filename, output_name):
+    loma_file = os.path.join(os.path.dirname(__file__), filename)
     with open(loma_file) as f:
         structs, lib = compiler.compile(
             f.read(),
             target="c",
-            output_filename="_code/train_mlp_sine"
+            output_filename=output_name
         )
-
     lib.mlp_loss.restype = ctypes.c_float
+    return lib
 
+
+def run_training(lib, steps=1000):
     FloatArray2 = ctypes.c_float * 2
 
-    # One training sample first.
     x = 0.7
     y_target = np.sin(x)
 
@@ -35,8 +36,11 @@ def main():
     b2_np = np.float32(0.05)
 
     lr = 0.05
+    final_loss = None
 
-    for step in range(100):
+    start = time.perf_counter()
+
+    for step in range(steps):
         w1 = FloatArray2(*w1_np)
         b1 = FloatArray2(*b1_np)
         w2 = FloatArray2(*w2_np)
@@ -49,7 +53,7 @@ def main():
         dx = ctypes.c_float(0.0)
         dy_target = ctypes.c_float(0.0)
 
-        loss = lib.mlp_loss(
+        final_loss = lib.mlp_loss(
             ctypes.c_float(x),
             ctypes.c_float(y_target),
             w1,
@@ -82,14 +86,37 @@ def main():
         w2_np[1] -= lr * dw2[1]
         b2_np -= lr * db2.value
 
-        if step % 10 == 0:
-            print("step:", step, "loss:", loss)
+    end = time.perf_counter()
 
-    print("Final weights:")
-    print("w1:", w1_np)
-    print("b1:", b1_np)
-    print("w2:", w2_np)
-    print("b2:", b2_np)
+    return final_loss, end - start
+
+
+def main():
+    softplus_lib = compile_loma(
+        "mlp_forward.py",
+        "_code/mlp_softplus_benchmark"
+    )
+
+    relu_lib = compile_loma(
+        "mlp_forward_relu.py",
+        "_code/mlp_relu_benchmark"
+    )
+
+    steps = 1000
+
+    softplus_loss, softplus_time = run_training(softplus_lib, steps)
+    relu_loss, relu_time = run_training(relu_lib, steps)
+
+    print("===== Activation optimization benchmark =====")
+    print("Steps:", steps)
+    print()
+    print("Softplus final loss:", softplus_loss)
+    print("Softplus time:", softplus_time)
+    print()
+    print("ReLU final loss:", relu_loss)
+    print("ReLU time:", relu_time)
+    print()
+    print("Speedup softplus_time / relu_time:", softplus_time / relu_time)
 
 
 if __name__ == "__main__":

@@ -26,13 +26,7 @@ def count_atomic_adds(func_str: str) -> int:
 
 
 def main():
-    # Simple primal function:
-    #
-    # def square(x : In[float]) -> float:
-    #     return x * x
-    #
-    # This is a good first test because reverse-mode AD should generate
-    # two gradient contributions into x.
+    
     x_arg = loma_ir.Arg("x", loma_ir.Float(), loma_ir.In())
 
     square_func = loma_ir.FunctionDef(
@@ -72,8 +66,7 @@ def main():
 
     print("===== GENERATED REVERSE FUNCTION =====")
 
-    # Depending on your pretty_print.py, one of these may be the correct call.
-    # Try the first one. If it errors, comment it out and try the second.
+    
     generated = pretty_print.loma_to_str(d_square)
     # generated = pretty_print.pretty_print(d_square)
 

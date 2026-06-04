@@ -101,11 +101,8 @@ def reverse_diff(diff_func_id : str,
                 assert False
 
     # CHANGED FOR PROJECT
-    # For the neural-network project, we allow reverse_diff to emit normal
-    # sequential adjoint accumulation instead of atomic_add. atomic_add is safer
-    # for parallel/SIMD code, but it adds unnecessary overhead for our single-threaded
-    # MLP training benchmark.
-    USE_ATOMIC_ADDS = True
+    
+    USE_ATOMIC_ADDS = False
 
     def accum_deriv(target, deriv, overwrite):
         match target.t:
@@ -116,11 +113,8 @@ def reverse_diff(diff_func_id : str,
                 if overwrite:
                     return [loma_ir.Assign(target, deriv)]
                 else:
+                    
                     # CHANGED FOR PROJECT
-                    # Original implementation always used atomic_add for adjoint
-                    # accumulation. For our MLP training benchmark, the reverse pass
-                    # is sequential, so normal addition is sufficient and should be
-                    # faster than atomic_add.
                     if USE_ATOMIC_ADDS:
                         return [loma_ir.CallStmt(loma_ir.Call(
                             'atomic_add',

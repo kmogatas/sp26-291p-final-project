@@ -3,8 +3,7 @@ import sys
 import ctypes
 import numpy as np
 
-# CHANGED FOR PROJECT
-# Add loma_public project root to Python path so this test can import compiler.py.
+
 PROJECT_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..")
 )
