@@ -1,0 +1,305 @@
+import os
+import sys
+import time
+import numpy as np
+
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, PROJECT_ROOT)
+
+import compiler
+import slang_utils
+import slangpy
+
+
+def train_loma_slang_with_gpu_reduction(batch_size=1024, steps=100, lr=0.05):
+    """
+    GPU training with on-device gradient accumulation and parameter updates.
+    This avoids materializing per-sample gradients and avoids per-step host
+    transfers for the parameter update.
+    """
+    slang_device = slang_utils.create_slang_device()
+    
+    # Load and compile the combined forward pass + reduction kernels
+    with open(os.path.join(os.path.dirname(__file__), "mlp_forward_slang_gpu_reduce.py")) as f:
+        module, kernels = compiler.compile(
+            f.read(),
+            target="slang",
+            slang_device=slang_device,
+        )
+
+    x_np = np.linspace(-3.14, 3.14, batch_size, dtype=np.float32)
+    y_np = np.sin(x_np).astype(np.float32)
+
+    w1_np = np.array([0.5, -0.8], dtype=np.float32)
+    b1_np = np.array([0.1, 0.2], dtype=np.float32)
+    w2_np = np.array([1.2, -0.4], dtype=np.float32)
+    b2_np = np.array([0.05], dtype=np.float32)
+
+    x_buf = slangpy.Tensor.from_numpy(device=slang_device, ndarray=x_np)
+    y_buf = slangpy.Tensor.from_numpy(device=slang_device, ndarray=y_np)
+    w1_buf = slangpy.Tensor.from_numpy(device=slang_device, ndarray=w1_np)
+    b1_buf = slangpy.Tensor.from_numpy(device=slang_device, ndarray=b1_np)
+    w2_buf = slangpy.Tensor.from_numpy(device=slang_device, ndarray=w2_np)
+    b2_buf = slangpy.Tensor.from_numpy(device=slang_device, ndarray=b2_np)
+
+    grad_w1_buf = slangpy.Tensor.zeros(device=slang_device, dtype=float, shape=(2,))
+    grad_b1_buf = slangpy.Tensor.zeros(device=slang_device, dtype=float, shape=(2,))
+    grad_w2_buf = slangpy.Tensor.zeros(device=slang_device, dtype=float, shape=(2,))
+    grad_b2_buf = slangpy.Tensor.zeros(device=slang_device, dtype=float, shape=(1,))
+    loss_sum_buf = slangpy.Tensor.zeros(device=slang_device, dtype=float, shape=(1,))
+    loss_mean_buf = slangpy.Tensor.zeros(device=slang_device, dtype=float, shape=(1,))
+
+    start = time.perf_counter()
+
+    for step in range(steps):
+        kernels['mlp_train_batch_accumulate'].dispatch(
+            thread_count=[batch_size, 1, 1],
+            _total_threads=batch_size,
+            x=x_buf.storage,
+            y_target=y_buf.storage,
+            w1=w1_buf.storage,
+            b1=b1_buf.storage,
+            w2=w2_buf.storage,
+            b2=b2_buf.storage,
+            grad_w1=grad_w1_buf.storage,
+            grad_b1=grad_b1_buf.storage,
+            grad_w2=grad_w2_buf.storage,
+            grad_b2=grad_b2_buf.storage,
+            loss_sum=loss_sum_buf.storage,
+        )
+
+        kernels['update_params_and_clear_gpu'].dispatch(
+            thread_count=[1, 1, 1],
+            _total_threads=1,
+            w1=w1_buf.storage,
+            b1=b1_buf.storage,
+            w2=w2_buf.storage,
+            b2=b2_buf.storage,
+            grad_w1=grad_w1_buf.storage,
+            grad_b1=grad_b1_buf.storage,
+            grad_w2=grad_w2_buf.storage,
+            grad_b2=grad_b2_buf.storage,
+            loss_sum=loss_sum_buf.storage,
+            loss_mean=loss_mean_buf.storage,
+            lr=float(lr),
+            batch_size=int(batch_size),
+        )
+
+    final_loss = float(loss_mean_buf.to_numpy().astype(np.float32)[0])
+    end = time.perf_counter()
+    return final_loss, end - start
+
+
+def train_loma_slang_with_staged_reduction(batch_size=1024, steps=100, lr=0.05):
+    """
+    GPU training with reusable per-sample gradient buffers, GPU reduction, and
+    GPU parameter updates. This avoids host-side updates while also avoiding
+    heavy atomic contention in the per-sample training kernel.
+    """
+    slang_device = slang_utils.create_slang_device()
+
+    with open(os.path.join(os.path.dirname(__file__), "mlp_forward_slang_gpu_reduce.py")) as f:
+        module, kernels = compiler.compile(
+            f.read(),
+            target="slang",
+            slang_device=slang_device,
+        )
+
+    x_np = np.linspace(-3.14, 3.14, batch_size, dtype=np.float32)
+    y_np = np.sin(x_np).astype(np.float32)
+
+    w1_np = np.array([0.5, -0.8], dtype=np.float32)
+    b1_np = np.array([0.1, 0.2], dtype=np.float32)
+    w2_np = np.array([1.2, -0.4], dtype=np.float32)
+    b2_np = np.array([0.05], dtype=np.float32)
+
+    x_buf = slangpy.Tensor.from_numpy(device=slang_device, ndarray=x_np)
+    y_buf = slangpy.Tensor.from_numpy(device=slang_device, ndarray=y_np)
+    w1_buf = slangpy.Tensor.from_numpy(device=slang_device, ndarray=w1_np)
+    b1_buf = slangpy.Tensor.from_numpy(device=slang_device, ndarray=b1_np)
+    w2_buf = slangpy.Tensor.from_numpy(device=slang_device, ndarray=w2_np)
+    b2_buf = slangpy.Tensor.from_numpy(device=slang_device, ndarray=b2_np)
+
+    dw1_buf = slangpy.Tensor.empty(device=slang_device, dtype=float, shape=(batch_size * 2,))
+    db1_buf = slangpy.Tensor.empty(device=slang_device, dtype=float, shape=(batch_size * 2,))
+    dw2_buf = slangpy.Tensor.empty(device=slang_device, dtype=float, shape=(batch_size * 2,))
+    db2_buf = slangpy.Tensor.empty(device=slang_device, dtype=float, shape=(batch_size,))
+    loss_buf = slangpy.Tensor.empty(device=slang_device, dtype=float, shape=(batch_size,))
+
+    grad_w1_buf = slangpy.Tensor.zeros(device=slang_device, dtype=float, shape=(2,))
+    grad_b1_buf = slangpy.Tensor.zeros(device=slang_device, dtype=float, shape=(2,))
+    grad_w2_buf = slangpy.Tensor.zeros(device=slang_device, dtype=float, shape=(2,))
+    grad_b2_buf = slangpy.Tensor.zeros(device=slang_device, dtype=float, shape=(1,))
+    loss_sum_buf = slangpy.Tensor.zeros(device=slang_device, dtype=float, shape=(1,))
+    loss_mean_buf = slangpy.Tensor.zeros(device=slang_device, dtype=float, shape=(1,))
+
+    start = time.perf_counter()
+
+    for step in range(steps):
+        kernels['mlp_train_batch'].dispatch(
+            thread_count=[batch_size, 1, 1],
+            _total_threads=batch_size,
+            x=x_buf.storage,
+            y_target=y_buf.storage,
+            w1=w1_buf.storage,
+            b1=b1_buf.storage,
+            w2=w2_buf.storage,
+            b2=b2_buf.storage,
+            loss_out=loss_buf.storage,
+            dw1_out=dw1_buf.storage,
+            db1_out=db1_buf.storage,
+            dw2_out=dw2_buf.storage,
+            db2_out=db2_buf.storage,
+        )
+
+        kernels['reduce_gradients'].dispatch(
+            thread_count=[64, 1, 1],
+            _total_threads=64,
+            dw1_in=dw1_buf.storage,
+            db1_in=db1_buf.storage,
+            dw2_in=dw2_buf.storage,
+            db2_in=db2_buf.storage,
+            loss_in=loss_buf.storage,
+            batch_size=batch_size,
+            grad_w1_out=grad_w1_buf.storage,
+            grad_b1_out=grad_b1_buf.storage,
+            grad_w2_out=grad_w2_buf.storage,
+            grad_b2_out=grad_b2_buf.storage,
+            loss_out=loss_sum_buf.storage,
+        )
+
+        kernels['update_params_and_clear_gpu'].dispatch(
+            thread_count=[1, 1, 1],
+            _total_threads=1,
+            w1=w1_buf.storage,
+            b1=b1_buf.storage,
+            w2=w2_buf.storage,
+            b2=b2_buf.storage,
+            grad_w1=grad_w1_buf.storage,
+            grad_b1=grad_b1_buf.storage,
+            grad_w2=grad_w2_buf.storage,
+            grad_b2=grad_b2_buf.storage,
+            loss_sum=loss_sum_buf.storage,
+            loss_mean=loss_mean_buf.storage,
+            lr=float(lr),
+            batch_size=int(batch_size),
+        )
+
+    final_loss = float(loss_mean_buf.to_numpy().astype(np.float32)[0])
+    end = time.perf_counter()
+    return final_loss, end - start
+
+
+def train_pytorch_softplus(batch_size=1024, steps=100, lr=0.05):
+    if torch is None:
+        raise RuntimeError(
+            "PyTorch is not installed in this Python environment. "
+            "Install torch to run the comparison side of this benchmark."
+        )
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    x = torch.linspace(-3.14, 3.14, batch_size, device=device, dtype=torch.float32)
+    y_target = torch.sin(x)
+
+    w1 = torch.tensor([0.5, -0.8], dtype=torch.float32, device=device, requires_grad=True)
+    b1 = torch.tensor([0.1, 0.2], dtype=torch.float32, device=device, requires_grad=True)
+    w2 = torch.tensor([1.2, -0.4], dtype=torch.float32, device=device, requires_grad=True)
+    b2 = torch.tensor(0.05, dtype=torch.float32, device=device, requires_grad=True)
+
+    final_loss = None
+    if device.type == 'cuda':
+        torch.cuda.synchronize()
+    start = time.perf_counter()
+
+    for _ in range(steps):
+        z = x.view(batch_size, 1) * w1.view(1, 2) + b1.view(1, 2)
+        h = torch.log1p(torch.exp(z))
+        y_pred = torch.sum(w2.view(1, 2) * h, dim=1) + b2
+        loss = torch.mean((y_pred - y_target) ** 2)
+
+        loss.backward()
+
+        with torch.no_grad():
+            w1 -= lr * w1.grad
+            b1 -= lr * b1.grad
+            w2 -= lr * w2.grad
+            b2 -= lr * b2.grad
+            w1.grad.zero_()
+            b1.grad.zero_()
+            w2.grad.zero_()
+            b2.grad.zero_()
+
+        final_loss = float(loss.item())
+
+    if device.type == 'cuda':
+        torch.cuda.synchronize()
+    end = time.perf_counter()
+    return final_loss, end - start
+
+
+def main():
+    batch_size = 1024
+    steps = 100
+
+    print('===== Loma GPU Optimized vs PyTorch =====')
+    print(f'batch_size: {batch_size}, steps: {steps}')
+    print()
+
+    atomic_loss, atomic_time = train_loma_slang_with_gpu_reduction(batch_size=batch_size, steps=steps)
+    staged_loss, staged_time = train_loma_slang_with_staged_reduction(batch_size=batch_size, steps=steps)
+
+    if staged_time < atomic_time:
+        loma_name = 'Loma GPU staged reduction'
+        loma_loss = staged_loss
+        loma_time = staged_time
+    else:
+        loma_name = 'Loma GPU atomic accumulation'
+        loma_loss = atomic_loss
+        loma_time = atomic_time
+
+    if torch is None:
+        print('\n===== Results =====')
+        print('Loma GPU atomic accumulation final loss:', atomic_loss)
+        print('Loma GPU atomic accumulation time:', atomic_time)
+        print()
+        print('Loma GPU staged reduction final loss:', staged_loss)
+        print('Loma GPU staged reduction time:', staged_time)
+        print()
+        print('Fastest Loma variant:', loma_name)
+        print()
+        print('PyTorch comparison skipped: torch is not installed.')
+        return
+
+    pytorch_loss, pytorch_time = train_pytorch_softplus(batch_size=batch_size, steps=steps)
+
+    print('\n===== Results =====')
+    print('Loma GPU atomic accumulation final loss:', atomic_loss)
+    print('Loma GPU atomic accumulation time:', atomic_time)
+    print()
+    print('Loma GPU staged reduction final loss:', staged_loss)
+    print('Loma GPU staged reduction time:', staged_time)
+    print()
+    print('Fastest Loma variant:', loma_name)
+    print('Fastest Loma final loss:', loma_loss)
+    print('Fastest Loma time:', loma_time)
+    print()
+    print('PyTorch final loss:', pytorch_loss)
+    print('PyTorch time:', pytorch_time)
+    print()
+    ratio = loma_time / pytorch_time if pytorch_time > 0 else float('inf')
+    print(f'Loma / PyTorch time ratio: {ratio:.2f}x')
+    
+    if ratio < 1.0:
+        print('GPU is faster than PyTorch CPU.')
+    else:
+        print(f'GPU is {ratio:.2f}x slower than PyTorch CPU.')
+
+
+if __name__ == '__main__':
+    main()
