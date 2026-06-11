@@ -17,19 +17,13 @@ print("PyTorch device:", "cuda" if torch.cuda.is_available() else "CPU only")
 if torch.cuda.is_available():
     print("GPU:", torch.cuda.get_device_name(0))
 
-# Check what slang_utils.create_slang_device() is giving you
 slang_device = slang_utils.create_slang_device()
 print("Slang device:", slang_device)
 
 def train_loma_slang_with_gpu_reduction(batch_size=1024, steps=100, lr=0.05):
-    """
-    GPU training with on-device gradient accumulation and parameter updates.
-    This avoids materializing per-sample gradients and avoids per-step host
-    transfers for the parameter update.
-    """
+
     slang_device = slang_utils.create_slang_device()
     
-    # Load and compile the combined forward pass + reduction kernels
     with open(os.path.join(os.path.dirname(__file__), "mlp_forward_slang_gpu_reduce.py")) as f:
         module, kernels = compiler.compile(
             f.read(),
@@ -101,11 +95,6 @@ def train_loma_slang_with_gpu_reduction(batch_size=1024, steps=100, lr=0.05):
 
 
 def train_loma_slang_with_staged_reduction(batch_size=1024, steps=100, lr=0.05):
-    """
-    GPU training with reusable per-sample gradient buffers, GPU reduction, and
-    GPU parameter updates. This avoids host-side updates while also avoiding
-    heavy atomic contention in the per-sample training kernel.
-    """
     slang_device = slang_utils.create_slang_device()
 
     with open(os.path.join(os.path.dirname(__file__), "mlp_forward_slang_gpu_reduce.py")) as f:
@@ -201,11 +190,6 @@ def train_loma_slang_with_staged_reduction(batch_size=1024, steps=100, lr=0.05):
 
 
 def train_pytorch_softplus(batch_size=1024, steps=100, lr=0.05):
-    if torch is None:
-        raise RuntimeError(
-            "PyTorch is not installed in this Python environment. "
-            "Install torch to run the comparison side of this benchmark."
-        )
 
     #device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     device = torch.device('cpu') 
@@ -249,9 +233,6 @@ def train_pytorch_softplus(batch_size=1024, steps=100, lr=0.05):
     return final_loss, end - start
 
 def train_pytorch_softplus_gpu(batch_size=1024, steps=100, lr=0.05):
-    if torch_directml is None:
-        print("torch-directml not installed — skipping PyTorch GPU benchmark.")
-        return None, None
 
     device = torch_directml.device()
 
@@ -263,7 +244,6 @@ def train_pytorch_softplus_gpu(batch_size=1024, steps=100, lr=0.05):
     w2 = torch.tensor([1.2, -0.4], dtype=torch.float32, device=device, requires_grad=True)
     b2 = torch.tensor(0.05, dtype=torch.float32, device=device, requires_grad=True)
 
-    # Warmup
     for _ in range(5):
         z = x.view(batch_size, 1) * w1.view(1, 2) + b1.view(1, 2)
         h = torch.log1p(torch.exp(z))
@@ -275,13 +255,11 @@ def train_pytorch_softplus_gpu(batch_size=1024, steps=100, lr=0.05):
                 p -= lr * p.grad
                 p.grad.zero_()
 
-    # Re-init after warmup
     w1 = torch.tensor([0.5, -0.8], dtype=torch.float32, device=device, requires_grad=True)
     b1 = torch.tensor([0.1, 0.2], dtype=torch.float32, device=device, requires_grad=True)
     w2 = torch.tensor([1.2, -0.4], dtype=torch.float32, device=device, requires_grad=True)
     b2 = torch.tensor(0.05, dtype=torch.float32, device=device, requires_grad=True)
 
-    # Force sync before timing starts
     _ = w1.sum().item()
     start = time.perf_counter()
 
@@ -298,12 +276,10 @@ def train_pytorch_softplus_gpu(batch_size=1024, steps=100, lr=0.05):
                 p.grad.zero_()
         final_loss = float(loss.item())
 
-    # .item() on the last loss already blocks, so timing is accurate
     end = time.perf_counter()
     return final_loss, end - start
 
 def train_loma_c_cpu(batch_size=1024, steps=100, lr=0.05):
-    """Loma compiled to C — true CPU baseline using the same Loma kernels."""
     with open(os.path.join(os.path.dirname(__file__), "mlp_forward_slang_gpu_reduce.py")) as f:
         structs, lib = compiler.compile(
             f.read(),
@@ -341,7 +317,7 @@ def train_loma_c_cpu(batch_size=1024, steps=100, lr=0.05):
             grad_w2.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
             grad_b2.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
             loss_sum.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-            ctypes.c_int(batch_size),  # thread count for simd
+            ctypes.c_int(batch_size),
         )
 
         scale = lr / batch_size
@@ -351,72 +327,12 @@ def train_loma_c_cpu(batch_size=1024, steps=100, lr=0.05):
         w2_np -= scale * grad_w2
         b2_np -= scale * grad_b2
 
-        # clear accumulators manually
         grad_w1[:] = 0; grad_b1[:] = 0
         grad_w2[:] = 0; grad_b2[:] = 0
         loss_sum[:] = 0
 
     end = time.perf_counter()
     return float(loss_mean[0]), end - start
-
-
-# def main():
-#     batch_size = 65536
-#     steps = 100
-
-#     print('===== Loma GPU Optimized vs PyTorch =====')
-#     print(f'batch_size: {batch_size}, steps: {steps}')
-#     print()
-
-#     atomic_loss, atomic_time = train_loma_slang_with_gpu_reduction(batch_size=batch_size, steps=steps)
-#     staged_loss, staged_time = train_loma_slang_with_staged_reduction(batch_size=batch_size, steps=steps)
-
-#     if staged_time < atomic_time:
-#         loma_name = 'Loma GPU staged reduction'
-#         loma_loss = staged_loss
-#         loma_time = staged_time
-#     else:
-#         loma_name = 'Loma GPU atomic accumulation'
-#         loma_loss = atomic_loss
-#         loma_time = atomic_time
-
-#     if torch is None:
-#         print('\n===== Results =====')
-#         print('Loma GPU atomic accumulation final loss:', atomic_loss)
-#         print('Loma GPU atomic accumulation time:', atomic_time)
-#         print()
-#         print('Loma GPU staged reduction final loss:', staged_loss)
-#         print('Loma GPU staged reduction time:', staged_time)
-#         print()
-#         print('Fastest Loma variant:', loma_name)
-#         print()
-#         print('PyTorch comparison skipped: torch is not installed.')
-#         return
-
-#     pytorch_loss, pytorch_time = train_pytorch_softplus(batch_size=batch_size, steps=steps)
-
-#     print('\n===== Results =====')
-#     print('Loma GPU atomic accumulation final loss:', atomic_loss)
-#     print('Loma GPU atomic accumulation time:', atomic_time)
-#     print()
-#     print('Loma GPU staged reduction final loss:', staged_loss)
-#     print('Loma GPU staged reduction time:', staged_time)
-#     print()
-#     print('Fastest Loma variant:', loma_name)
-#     print('Fastest Loma final loss:', loma_loss)
-#     print('Fastest Loma time:', loma_time)
-#     print()
-#     print('PyTorch final loss:', pytorch_loss)
-#     print('PyTorch time:', pytorch_time)
-#     print()
-#     ratio = loma_time / pytorch_time if pytorch_time > 0 else float('inf')
-#     print(f'Loma / PyTorch time ratio: {ratio:.2f}x')
-    
-#     if ratio < 1.0:
-#         print('GPU is faster than PyTorch CPU.')
-#     else:
-#         print(f'GPU is {ratio:.2f}x slower than PyTorch CPU.')
-
 
 def main():
     batch_size = 65536 
@@ -443,7 +359,7 @@ def main():
         ('PyTorch GPU',        pytorch_gpu_loss,  pytorch_gpu_time),
     ]
 
-    baseline_time = pytorch_cpu_time  # compare everything to PyTorch CPU
+    baseline_time = pytorch_cpu_time
     for name, loss, t in results:
         if t is None:
             print(f'  {name:<25} SKIPPED')
