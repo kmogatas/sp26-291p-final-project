@@ -3,13 +3,12 @@ import sys
 import ctypes
 import time
 import numpy as np
+import compiler
 
 PROJECT_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..")
 )
 sys.path.insert(0, PROJECT_ROOT)
-
-import compiler
 
 
 def compile_loma(filename, output_name):
@@ -53,8 +52,7 @@ def run_per_sample_training(lib, xs_np, ys_np, steps=1000):
 
         total_loss = 0.0
 
-        # Per-sample pipeline:
-        # call the single-example Loma loss and gradient once per sample.
+        #batch
         for i in range(4):
             x = float(xs_np[i])
             y_target = float(ys_np[i])
@@ -70,8 +68,7 @@ def run_per_sample_training(lib, xs_np, ys_np, steps=1000):
 
             total_loss += sample_loss
 
-            # Use dreturn = 1/4 so that the accumulated gradient matches
-            # the gradient of the average batch loss.
+            
             lib.d_mlp_loss(
                 ctypes.c_float(x),
                 ctypes.byref(dx),
@@ -144,8 +141,7 @@ def run_batch_training(lib, xs_np, ys_np, steps=1000):
             ctypes.c_float(b2_np),
         )
 
-        # Batched pipeline:
-        # one reverse-mode call computes the gradient for all 4 samples.
+        
         lib.d_mlp_loss_batch(
             xs,
             dxs,

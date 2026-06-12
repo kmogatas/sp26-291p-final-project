@@ -2,13 +2,12 @@ import os
 import sys
 import ctypes
 import numpy as np
+import compiler
 
 PROJECT_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..")
 )
 sys.path.insert(0, PROJECT_ROOT)
-
-import compiler
 
 
 def main():
@@ -25,7 +24,6 @@ def main():
 
     FloatArray2 = ctypes.c_float * 2
 
-    # One training sample first.
     x = 0.7
     y_target = np.sin(x)
 

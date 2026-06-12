@@ -92,10 +92,6 @@ def main():
     dw2 = FloatArray2(0.0, 0.0)
     db2 = ctypes.c_float(0.0)
 
-    # d_mlp_loss signature should follow this pattern:
-    # x, _dx, y_target, _dy_target, w1, _dw1, b1, _db1, w2, _dw2, b2, _db2, _dreturn
-    #
-    # For this project, we mainly care about gradients for weights and biases.
     dx = ctypes.c_float(0.0)
     dy_target = ctypes.c_float(0.0)
 

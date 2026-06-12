@@ -86,7 +86,6 @@ def train_pytorch_relu(steps=1000):
 def main():
     steps = 1000
 
-    # Optional warmup, so first-call overhead is less noisy.
     train_pytorch_softplus(steps=10)
     train_pytorch_relu(steps=10)
 

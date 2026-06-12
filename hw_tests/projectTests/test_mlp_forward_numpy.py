@@ -21,13 +21,6 @@ def mlp_loss_numpy(x, y_target, w1, b1, w2, b2):
 
 
 def main():
-    # x = 0.7
-    # y_target = np.sin(x)
-
-    # w1 = np.array([0.5, -0.8], dtype=np.float64)
-    # b1 = np.array([0.1, 0.2], dtype=np.float64)
-    # w2 = np.array([1.2, -0.4], dtype=np.float64)
-    # b2 = 0.05
     x = 0.7
     y_target = 0.644217687237691
     w1 = [0.5, -0.8]

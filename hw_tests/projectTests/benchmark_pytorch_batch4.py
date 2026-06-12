@@ -49,7 +49,6 @@ def train_pytorch_batch4(steps=1000):
 def main():
     steps = 1000
 
-    # Warmup to reduce one-time PyTorch overhead.
     train_pytorch_batch4(steps=10)
 
     loss, elapsed = train_pytorch_batch4(steps=steps)
